@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>日報報告</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="日報報告">
+<style>
+  body{font-family:sans-serif;margin:0;padding:16px;background:#f5f7fa;color:#222}
+  h1{font-size:20px;margin:0 0 4px}
+  .who{color:#666;margin-bottom:16px}
+  .card{background:#fff;border-radius:12px;padding:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+  .q{font-size:18px;font-weight:bold;margin-bottom:12px}
+  textarea{width:100%;box-sizing:border-box;min-height:110px;font-size:17px;padding:10px;border:1px solid #ccc;border-radius:8px}
+  button{font-size:17px;padding:14px;border:none;border-radius:10px;margin-top:10px;width:100%}
+  button:disabled{opacity:.4}
+  .main{background:#1a73e8;color:#fff}
+  .sub{background:#e8eaed;color:#222}
+  .mic{background:#d93025;color:#fff}
+  .mic.on{background:#188038}
+  .row{display:flex;gap:8px}
+  .row button{flex:1}
+  .status{color:#666;font-size:14px;margin-top:8px;min-height:1.2em}
+  .hidden{display:none}
+  .conf div{margin-bottom:10px}
+  .conf b{display:block;color:#555;font-size:14px}
+</style>
+</head>
+<body>
+<h1>日報報告</h1>
+<div class="who" id="who"></div>
+
+<div id="startView" class="card">
+  <p>ボタンを押すと質問を読み上げます。声で答えてください。</p>
+  <button id="startBtn" class="main">日報をはじめる</button>
+</div>
+
+<div id="qView" class="card hidden">
+  <div id="progress" class="status"></div>
+  <div id="qText" class="q"></div>
+  <textarea id="answer" placeholder="ここに答えが入ります"></textarea>
+  <button id="micBtn" class="mic">🎤 話す</button>
+  <div id="status" class="status"></div>
+  <div class="row">
+    <button id="backBtn" class="sub">戻る</button>
+    <button id="repeatBtn" class="sub">もう一度聞く</button>
+  </div>
+  <button id="nextBtn" class="main">次へ</button>
+</div>
+
+<div id="confView" class="card hidden">
+  <div class="q">内容を確認してください</div>
+  <div id="confList" class="conf"></div>
+  <button id="sendBtn" class="main">送信する</button>
+  <button id="editBtn" class="sub">最初から直す</button>
+</div>
+
+<div id="doneView" class="card hidden">
+  <div class="q">送信しました。おつかれさまでした！</div>
+  <div id="tsText" class="status"></div>
+  <button id="againBtn" class="sub">もう1件入力する</button>
+</div>
+
+<script>
+const API = 'https://script.google.com/macros/s/AKfycbxT0rw7hn2U5dFMuMyS-aUHz5xMl1FDh1uE0TgTb5qiTL0VUdNxnt1ycEo3qCJRWgem4w/exec';
+const STAFF = {a01:'市川',a02:'佐藤',a03:'長谷川',a04:'齋藤',a05:'土田',a06:'小林',a07:'大橋',a08:'下山',a09:'渡辺',a10:'田辺'};
+const STAFF_KEY = (new URLSearchParams(location.search).get('u') || '').trim();
+if (!STAFF[STAFF_KEY]) {
+  document.body.innerHTML = '<p style="padding:16px">URLが正しくありません。管理者に確認してください。</p>';
+  throw new Error('bad key');
+}
+document.getElementById('who').textContent = STAFF[STAFF_KEY] + ' さん';
+
+// [項目, 読み上げる質問, 確認画面の見出し]
+const QS = [
+  ['school',  '訪問した学校はどちらですか？', '学校名'],
+  ['time',    '何時から何時まででしたか？', '時間'],
+  ['youken',  'どんなご用件でしたか？', '要件'],
+  ['seika',   'うまくいったことや、成果を教えてください。', '成果'],
+  ['hanno',   '先生の反応や、お返事はどうでしたか？', '先生の反応'],
+  ['kadai',   '課題や、次にやることはありますか？', '課題'],
+  ['renraku', '誰かへの連絡や依頼はありますか？　あれば、相手の名前と内容を話してください。', '連絡・依頼']
+];
+
+// 答えたあとの相づち（毎回少しずつ変える）
+const ACKS = ['ありがとうございます。', 'はい、わかりました。','ありがとうございます、では次です。'];
+function ack() { return ACKS[Math.floor(Math.random() * ACKS.length)]; }
+
+// 端末の中で、いちばん自然な日本語の声を選ぶ
+let jaVoice = null;
+function pickVoice() {
+  const vs = speechSynthesis.getVoices()
+    .filter(v => (v.lang || '').replace('_', '-').toLowerCase().startsWith('ja'));
+  const natural = vs.find(v => /natural|enhanced|premium|neural|拡張|プレミアム/i.test(v.name));
+  const prefer = ['Google 日本語', 'Kyoko', 'O-ren', 'Nanami', 'Haruka', 'Ayumi']
+    .map(p => vs.find(v => v.name.includes(p))).find(Boolean);
+  jaVoice = natural || prefer || vs[0] || null;
+}
+pickVoice();
+speechSynthesis.onvoiceschanged = pickVoice;
+
+const ans = {};
+let idx = 0;
+const $ = id => document.getElementById(id);
+
+function show(v) {
+  ['startView','qView','confView','doneView'].forEach(x => $(x).classList.toggle('hidden', x !== v));
+}
+
+// 読み上げが終わってから次の処理に進む
+function speakThen(text, next) {
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'ja-JP';
+  if (jaVoice) u.voice = jaVoice;
+  u.rate = 1.25;   // 少し早めのテンポ（1.0が標準、上げるほど速い）
+  u.pitch = 1.05;  // 少し明るめの声に
+  u.onend = () => { if (next) next(); };
+  speechSynthesis.speak(u);
+}
+
+// 音声入力
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, listening = false, keepListening = false;
+
+// 答えの最後に「次へ」と言うと次の質問へ進む
+const NEXT_RE = /[、。,.\s]*(次へ|次え|つぎへ|次に進む|次に進んで|次お願いします)[。．.!！]?$/;
+
+function setMicUI(on) {
+  listening = on;
+  $('micBtn').classList.toggle('on', on);
+  $('micBtn').textContent = on ? '■ 止める' : '🎤 話す';
+  $('status').textContent = on ? '聞き取り中…　答えたら「次へ」と言ってください' : '';
+}
+
+function startListen() {
+  if (!SR) { $('status').textContent = 'この端末では音声入力が使えません。入力欄に文字で入力してください'; return; }
+  keepListening = true;
+  listenOnce();
+}
+
+function listenOnce() {
+  if (rec) { try { rec.abort(); } catch (e) {} }
+  rec = new SR();
+  rec.lang = 'ja-JP';
+  rec.interimResults = true;
+  rec.continuous = true;
+  const base = $('answer').value;
+
+  rec.onresult = e => {
+    let t = '';
+    for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
+    const last = e.results[e.results.length - 1];
+    if (last.isFinal && NEXT_RE.test(t)) {
+      $('answer').value = (base + t.replace(NEXT_RE, '')).trim();
+      goNext();
+      return;
+    }
+    $('answer').value = base + t;
+  };
+
+  rec.onend = () => {
+    setMicUI(false);
+    // 話が途切れても、質問画面にいる間は聞き取りを続ける
+    if (keepListening && !$('qView').classList.contains('hidden')) {
+      setTimeout(() => { if (keepListening) listenOnce(); }, 300);
+    }
+  };
+
+  rec.onerror = e => {
+    if (e.error === 'no-speech' || e.error === 'aborted') return;
+    keepListening = false;
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      micMsg('マイクが許可されていません。🎤 話す を押して「許可」を選んでください');
+    } else {
+      micMsg('🎤 話す を押して答えてください');
+    }
+  };
+
+  try {
+    rec.start();
+    setMicUI(true);
+  } catch (e) {
+    keepListening = false;
+    micMsg('🎤 話す を押して答えてください');
+  }
+}
+
+// 自動で聞き取れなかったときは、マイクボタンを押してもらう
+function micMsg(t) {
+  setTimeout(() => { setMicUI(false); $('status').textContent = t; }, 0);
+}
+
+// 入力欄の最後に「次へ」が入ったら次の質問へ（キーボードの音声入力でも使える）
+$('answer').addEventListener('input', () => {
+  const v = $('answer').value;
+  if (NEXT_RE.test(v)) {
+    $('answer').value = v.replace(NEXT_RE, '').trim();
+    $('answer').blur();
+    goNext();
+  }
+});
+
+function stopListen() {
+  keepListening = false;
+  if (rec) { try { rec.abort(); } catch (e) {} }
+}
+
+
+function askQuestion(i, withAck) {
+  idx = i;
+  show('qView');
+  $('progress').textContent = (i + 1) + ' / ' + QS.length;
+  $('qText').textContent = QS[i][1];
+  $('answer').value = ans[QS[i][0]] || '';
+  $('status').textContent = '';
+  $('backBtn').disabled = (i === 0);
+  $('nextBtn').textContent = (i === QS.length - 1) ? '確認へ' : '次へ';
+  speakThen((withAck ? ack() : '') + QS[i][1], startListen);
+}
+function saveCurrent() { ans[QS[idx][0]] = $('answer').value.trim(); }
+
+$('startBtn').onclick = () => { speakThen('日報を記録します！', () => askQuestion(0)); };
+$('micBtn').onclick = () => { listening ? stopListen() : startListen(); };
+$('repeatBtn').onclick = () => { stopListen(); speakThen(QS[idx][1], startListen); };
+$('backBtn').onclick = () => { stopListen(); saveCurrent(); if (idx > 0) askQuestion(idx - 1); };
+function goNext() {
+  stopListen(); saveCurrent();
+  const answered = !!ans[QS[idx][0]];
+  if (idx < QS.length - 1) askQuestion(idx + 1, answered); else showConfirm();
+}
+$('nextBtn').onclick = goNext;
+
+function showConfirm() {
+  show('confView');
+  const list = $('confList');
+  list.innerHTML = '';
+  QS.forEach(q => {
+    const d = document.createElement('div');
+    const b = document.createElement('b');
+    b.textContent = q[2];
+    const s = document.createElement('span');
+    s.textContent = ans[q[0]] || '（なし）';
+    d.appendChild(b); d.appendChild(s);
+    list.appendChild(d);
+  });
+  speakThen('ありがとうございます。内容を確認して、よければ送信してください。');
+}
+
+$('editBtn').onclick = () => askQuestion(0);
+
+$('sendBtn').onclick = () => {
+  const btn = $('sendBtn');
+  btn.disabled = true; btn.textContent = '送信中…';
+  fetch(API, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(Object.assign({ key: STAFF_KEY }, ans))
+  })
+    .then(r => r.json())
+    .then(res => {
+      if (!res.ok) throw new Error(res.error || '送信エラー');
+      btn.disabled = false; btn.textContent = '送信する';
+      $('tsText').textContent = '送信日時：' + res.ts;
+      show('doneView');
+      speakThen('送信しました。今日もおつかれさまでした！');
+    })
+    .catch(err => {
+      btn.disabled = false; btn.textContent = '送信する';
+      alert('送信できませんでした。電波の良いところでもう一度押してください。（' + err.message + '）');
+    });
+};
+
+$('againBtn').onclick = () => {
+  for (const k in ans) delete ans[k];
+  show('startView');
+};
+</script>
+</body>
+</html>
