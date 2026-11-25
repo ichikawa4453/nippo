@@ -32,7 +32,7 @@
 <div class="who" id="who"></div>
 
 <div id="startView" class="card">
-  <p>ボタンを押すと質問を読み上げます。声で答えてください。</p>
+  <p>ボタンを押すと質問が表示されます。画面の質問に声で答えてください。</p>
   <button id="startBtn" class="main">日報をはじめる</button>
 </div>
 
@@ -44,7 +44,7 @@
   <div id="status" class="status"></div>
   <div class="row">
     <button id="backBtn" class="sub">戻る</button>
-    <button id="repeatBtn" class="sub">もう一度聞く</button>
+    <button id="repeatBtn" class="sub">話し直す</button>
   </div>
   <button id="nextBtn" class="main">次へ</button>
 </div>
@@ -110,8 +110,16 @@ function show(v) {
 }
 
 // 読み上げが終わってから次の処理に進む
+// 質問を声で読み上げるかどうか（false：読み上げずに、すぐ聞き取りを始める）
+const READ_ALOUD = false;
+
 let speakTimer = null;
 function speakThen(text, next) {
+  if (!READ_ALOUD) {
+    stopListen();
+    if (next) next();
+    return;
+  }
   // マイクを完全に止めてから読み上げる（iPhoneでは聞き取り中だと声が小さく・聞こえなくなるため）
   stopListen();
   clearTimeout(speakTimer);
@@ -243,10 +251,12 @@ function saveCurrent() { ans[QS[idx][0]] = $('answer').value.trim(); }
 
 $('startBtn').onclick = () => {
   // iPhoneで読み上げを使えるようにするため、ボタンを押した瞬間に一度だけ無音で読み上げる
-  try { const w = new SpeechSynthesisUtterance(' '); w.volume = 0; speechSynthesis.speak(w); } catch (e) {}
+  if (READ_ALOUD) {
+    try { const w = new SpeechSynthesisUtterance(' '); w.volume = 0; speechSynthesis.speak(w); } catch (e) {}
+  }
   speakThen('日報を記録します！', () => askQuestion(0)); };
 $('micBtn').onclick = () => { listening ? stopListen() : startListen(); };
-$('repeatBtn').onclick = () => { stopListen(); speakThen(QS[idx][1], startListen); };
+$('repeatBtn').onclick = () => { stopListen(); $('answer').value = ''; speakThen(QS[idx][1], startListen); };
 $('backBtn').onclick = () => { stopListen(); saveCurrent(); if (idx > 0) askQuestion(idx - 1); };
 function goNext() {
   stopListen(); saveCurrent();
