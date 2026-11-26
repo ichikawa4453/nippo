@@ -116,7 +116,7 @@ const READ_ALOUD = false;
 let speakTimer = null;
 function speakThen(text, next) {
   if (!READ_ALOUD) {
-    stopListen();
+    // 読み上げない設定では、マイクを止めずにそのまま次へ（聞き取りをつなげたままにする）
     if (next) next();
     return;
   }
@@ -149,8 +149,12 @@ function speakThen(text, next) {
 }
 
 // 音声入力
+// マイクは質問ごとに止めずに、1回つないだまま使い続ける（つなぎ直しに時間がかかるため）
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null, listening = false, keepListening = false;
+let segStart = 0;   // 今の質問の答えが、聞き取り結果の何番目から始まるか
+let resultsLen = 0; // これまでに届いた聞き取り結果の数
+let base = '';      // 今の質問で、聞き取りを始める前から入力欄にあった文字
 
 // 答えの最後に「次へ」と言うと次の質問へ進む
 const NEXT_RE = /[、。,.\s]*(次へ|次え|つぎへ|次に進む|次に進んで|次お願いします)[。．.!！]?$/;
@@ -162,9 +166,16 @@ function setMicUI(on) {
   $('status').textContent = on ? '聞き取り中…　答えたら「次へ」と言ってください' : '';
 }
 
+// 新しい質問の答えを、ここから書き始める
+function newSegment() {
+  segStart = resultsLen;
+  base = $('answer').value;
+}
+
 function startListen() {
   if (!SR) { $('status').textContent = 'この端末では音声入力が使えません。入力欄に文字で入力してください'; return; }
   keepListening = true;
+  if (rec && listening) { newSegment(); setMicUI(true); return; } // すでに聞き取り中なら、そのまま続ける
   listenOnce();
 }
 
@@ -174,11 +185,13 @@ function listenOnce() {
   rec.lang = 'ja-JP';
   rec.interimResults = true;
   rec.continuous = true;
-  const base = $('answer').value;
+  resultsLen = 0;
+  newSegment();
 
   rec.onresult = e => {
+    resultsLen = e.results.length;
     let t = '';
-    for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
+    for (let i = segStart; i < e.results.length; i++) t += e.results[i][0].transcript;
     const last = e.results[e.results.length - 1];
     if (last.isFinal && NEXT_RE.test(t)) {
       $('answer').value = (base + t.replace(NEXT_RE, '')).trim();
@@ -190,10 +203,8 @@ function listenOnce() {
 
   rec.onend = () => {
     setMicUI(false);
-    // 話が途切れても、質問画面にいる間は聞き取りを続ける
-    if (keepListening && !$('qView').classList.contains('hidden')) {
-      setTimeout(() => { if (keepListening) listenOnce(); }, 100);
-    }
+    // 端末の都合で聞き取りが切れても、質問画面にいる間はすぐにつなぎ直す
+    if (keepListening && !$('qView').classList.contains('hidden')) listenOnce();
   };
 
   rec.onerror = e => {
@@ -242,7 +253,6 @@ function askQuestion(i, withAck) {
   $('progress').textContent = (i + 1) + ' / ' + QS.length;
   $('qText').textContent = QS[i][1];
   $('answer').value = ans[QS[i][0]] || '';
-  $('status').textContent = '';
   $('backBtn').disabled = (i === 0);
   $('nextBtn').textContent = (i === QS.length - 1) ? '確認へ' : '次へ';
   speakThen((withAck ? ack() : '') + QS[i][1], startListen);
@@ -253,15 +263,19 @@ $('startBtn').onclick = () => {
   // iPhoneで読み上げを使えるようにするため、ボタンを押した瞬間に一度だけ無音で読み上げる
   if (READ_ALOUD) {
     try { const w = new SpeechSynthesisUtterance(' '); w.volume = 0; speechSynthesis.speak(w); } catch (e) {}
+    speakThen('日報を記録します！', () => askQuestion(0));
+  } else {
+    askQuestion(0);
   }
-  speakThen('日報を記録します！', () => askQuestion(0)); };
+};
 $('micBtn').onclick = () => { listening ? stopListen() : startListen(); };
-$('repeatBtn').onclick = () => { stopListen(); $('answer').value = ''; speakThen(QS[idx][1], startListen); };
-$('backBtn').onclick = () => { stopListen(); saveCurrent(); if (idx > 0) askQuestion(idx - 1); };
+$('repeatBtn').onclick = () => { $('answer').value = ''; if (listening) newSegment(); else startListen(); };
+$('backBtn').onclick = () => { saveCurrent(); if (idx > 0) askQuestion(idx - 1); };
 function goNext() {
-  stopListen(); saveCurrent();
+  saveCurrent();
   const answered = !!ans[QS[idx][0]];
-  if (idx < QS.length - 1) askQuestion(idx + 1, answered); else showConfirm();
+  if (idx < QS.length - 1) askQuestion(idx + 1, answered);
+  else { stopListen(); showConfirm(); }
 }
 $('nextBtn').onclick = goNext;
 
