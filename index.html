@@ -40,6 +40,10 @@
   <div id="progress" class="status"></div>
   <div id="qText" class="q"></div>
   <textarea id="answer" placeholder="ここに答えが入ります"></textarea>
+  <div id="choiceRow" class="row hidden">
+    <button id="yesBtn" class="main">する</button>
+    <button id="noBtn" class="sub">しない</button>
+  </div>
   <button id="micBtn" class="mic">🎤 話す</button>
   <div id="status" class="status"></div>
   <div class="row">
@@ -83,8 +87,14 @@ const QS = [
   ['hanno',   '先生の反応や、お返事はどうでしたか？', '先生の反応'],
   ['kadai',   '課題や、次にやることはありますか？', '課題'],
   ['renraku', '誰かへの連絡や依頼はありますか？　あれば、相手の名前と内容を話してください。', '連絡・依頼'],
+  ['domatome','今日一日のまとめをしますか？', 'まとめをするか', 'choice'],
   ['matome',  '最後に、今日のまとめを話してください。', '今日のまとめ']
 ];
+
+// 「する／しない」で答える質問かどうか
+const isChoice = i => QS[i][3] === 'choice';
+const NO_RE  = /(しない|しません|いいえ|いや|なし|結構|やめ)/;
+const YES_RE = /(する|します|はい|お願い|やる)/;
 
 // 答えたあとの相づち（毎回少しずつ変える）
 const ACKS = ['ありがとうございます。', 'はい、わかりました。','ありがとうございます、では次です。'];
@@ -195,6 +205,14 @@ function listenOnce() {
     let t = '';
     for (let i = segStart; i < e.results.length; i++) t += e.results[i][0].transcript;
     const last = e.results[e.results.length - 1];
+    if (isChoice(idx)) {
+      $('answer').value = t;
+      if (last.isFinal) {
+        if (NO_RE.test(t)) choose(false);
+        else if (YES_RE.test(t)) choose(true);
+      }
+      return;
+    }
     if (last.isFinal && NEXT_RE.test(t)) {
       $('answer').value = (base + t.replace(NEXT_RE, '')).trim();
       goNext();
@@ -257,6 +275,9 @@ function askQuestion(i, withAck) {
   $('answer').value = ans[QS[i][0]] || '';
   $('backBtn').disabled = (i === 0);
   $('nextBtn').textContent = (i === QS.length - 1) ? '確認へ' : '次へ';
+  $('choiceRow').classList.toggle('hidden', !isChoice(i));
+  $('nextBtn').classList.toggle('hidden', isChoice(i));
+  $('answer').classList.toggle('hidden', isChoice(i));
   speakThen((withAck ? ack() : '') + QS[i][1], startListen);
 }
 function saveCurrent() { ans[QS[idx][0]] = $('answer').value.trim(); }
@@ -281,11 +302,22 @@ function goNext() {
 }
 $('nextBtn').onclick = goNext;
 
+// 「まとめをしますか？」の答え：する → まとめの質問へ、しない → 確認画面へ
+function choose(yes) {
+  ans[QS[idx][0]] = yes ? 'する' : 'しない';
+  if (yes) { askQuestion(idx + 1); }
+  else { ans.matome = ''; stopListen(); showConfirm(); }
+}
+$('yesBtn').onclick = () => choose(true);
+$('noBtn').onclick = () => choose(false);
+
 function showConfirm() {
   show('confView');
   const list = $('confList');
   list.innerHTML = '';
   QS.forEach(q => {
+    if (q[3] === 'choice') return;
+    if (q[0] === 'matome' && ans.domatome === 'しない') return;
     const d = document.createElement('div');
     const b = document.createElement('b');
     b.textContent = q[2];
